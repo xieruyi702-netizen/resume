@@ -135,6 +135,6 @@ evals/
 - [x] Plan-and-Execute 模式（planner/executor/replanner/answer，`--mode pae`，含 E1 对比实验）
 - [x] LLM-as-Judge（GLM 跨源语义判分 + judge 仲裁记忆写入）
 - [x] golden 扩到 42 条（单跳/双跳/拒答）
-- [ ] 上下文压缩与 token 预算
+- [x] 上下文压缩与 token 预算（`--compress on|off`，检索证据按分装入预算）
 - [ ] 陷阱题子集 + 检索失败入库（给记忆模块提供原料）
 - [ ] Judge 严格化（数字敏感 rubric / 双 judge）

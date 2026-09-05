@@ -1,11 +1,13 @@
-"""ReAct 风格 agent：LLM ↔ retrieve 工具循环，支持失败记忆注入。
+"""ReAct 风格 agent：LLM ↔ retrieve 工具循环，支持失败记忆注入与检索压缩。
 
 mode 说明：
   memory_on=True  → 回答前从失败记忆库检索相似失败案例，注入 system prompt
   memory_on=False → 不注入（对照组），失败仍会被写入记忆库供后续运行使用
+  compress=True   → 检索证据按字符预算裁剪（默认读 config.USE_COMPRESS）
 """
 from src import config
 from src.agent.tools import TOOLS_SCHEMA, execute_tool
+from src.context.compressor import clip_memory_hits
 from src.llm.provider import get_llm
 from src.retrieval.retriever import get_retriever
 from src.trace import AgentTrace
@@ -25,11 +27,15 @@ class Agent:
         self.retriever = retriever or get_retriever()
         self.memory = memory
 
-    def run(self, question: str, memory_on: bool = True) -> AgentTrace:
+    def run(self, question: str, memory_on: bool = True,
+            compress: bool | None = None) -> AgentTrace:
+        use_compress = config.USE_COMPRESS if compress is None else compress
         trace = AgentTrace()
         system = SYSTEM_PROMPT
         if self.memory and memory_on:
             hits = self.memory.recall(question)
+            if use_compress:
+                hits = clip_memory_hits(hits)
             if hits:
                 lines = "\n".join(
                     f"- 相似问题「{h['question']}」曾失败({h['outcome']})，根因: {h['root_cause']}；教训: {h['lesson']}"
@@ -58,13 +64,18 @@ class Agent:
                         ],
                     })
                     for t in resp.tool_calls:
-                        result = execute_tool(t["name"], t["arguments"], self.retriever, trace)
+                        result = execute_tool(
+                            t["name"], t["arguments"], self.retriever, trace,
+                            compress=use_compress,
+                        )
                         messages.append({"role": "tool", "tool_call_id": t["id"], "content": result})
                 else:
                     trace.answer = resp.content or ""
                     break
             if not trace.answer:
                 trace.answer = "(agent 达到最大步数，未产出最终答案)"
+            if trace.compress is None:
+                trace.compress = {"on": use_compress}
         except Exception as e:
             trace.error = str(e)
             trace.answer = trace.answer or f"(agent 出错: {e})"

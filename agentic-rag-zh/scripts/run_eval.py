@@ -4,6 +4,7 @@
   uv run python scripts/run_eval.py --tag mem_on  --with-llm --memory on   # 注入失败记忆
   uv run python scripts/run_eval.py --tag judged  --with-llm --judge       # 叠加 GLM 跨源判分
   uv run python scripts/run_eval.py --tag quick --limit 5      # 快速抽测
+  uv run python scripts/run_eval.py --tag cmp_on --with-llm --compress on --limit 5
 """
 import argparse
 import json
@@ -19,6 +20,8 @@ if __name__ == "__main__":
     ap.add_argument("--tag", required=True)
     ap.add_argument("--with-llm", action="store_true", help="跑答案层（需 API key 或 DRY_RUN=1）")
     ap.add_argument("--memory", choices=["off", "on"], default="off")
+    ap.add_argument("--compress", choices=["off", "on"], default="off",
+                    help="检索证据按字符预算裁剪（默认 off）")
     ap.add_argument("--judge", action="store_true", help="叠加 LLM-as-Judge（需 JUDGE_API_KEY）")
     ap.add_argument("--mode", choices=["react", "pae"], default="react",
                     help="agent 编排模式：react=工具循环 / pae=Plan-and-Execute")
@@ -26,5 +29,6 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     result = run_eval(args.tag, with_llm=args.with_llm, memory_on=args.memory == "on",
-                      use_judge=args.judge, limit=args.limit, mode=args.mode)
+                      use_judge=args.judge, limit=args.limit, mode=args.mode,
+                      compress_on=args.compress == "on")
     print(json.dumps(result["aggregate"], ensure_ascii=False, indent=2))

@@ -50,6 +50,11 @@ JUDGE_MODEL = os.getenv("JUDGE_MODEL", "glm-4-flash")
 MAX_AGENT_STEPS = 4
 MAX_PLAN_STEPS = 3      # PAE：规划步数上限
 
+# 上下文压缩（检索证据按预算裁剪；可用 --compress / 环境变量覆盖）
+USE_COMPRESS = os.getenv("USE_COMPRESS", "0") == "1"
+RETRIEVAL_BUDGET_CHARS = int(os.getenv("RETRIEVAL_BUDGET_CHARS", "3000"))
+MEMORY_BUDGET_CHARS = int(os.getenv("MEMORY_BUDGET_CHARS", "600"))
+
 # 失败记忆
 MEMORY_COLLECTION = "failure_memory"
 MEMORY_TOP_K = 2

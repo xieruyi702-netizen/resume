@@ -17,7 +17,7 @@
 
 - **语言与框架**：Java（Spring Boot）、Python；熟悉 Redis、MySQL、Kafka、Dubbo
 - **推荐与策略**：延迟队列、分布式锁、频控、UCB 多臂老虎机工程化、实验配置（Apollo）
-- **AI / RAG**：混合检索（BM25 + 向量 + RRF）、父子分块、ReAct Agent、失败记忆、LLM-as-Judge 评测体系
+- **AI / RAG**：混合检索（BM25 + 向量 + RRF）、父子分块、ReAct Agent、失败记忆、上下文压缩、LLM-as-Judge 评测
 - **工程能力**：高并发消费优化、幂等与降级设计、可观测打点、配置化与灰度
 
 ---
@@ -69,26 +69,27 @@
 
 ### Agentic-RAG-ZH｜中文 Agentic-RAG 框架（自研）
 
-> 参考业界混合检索 + Agent 工具循环模式自研，面向中文新闻领域知识库问答（8.9 万篇文档 / 35 万向量块）。  
-> 仓库：【GitHub 链接】｜技术栈：Python、ChromaDB、BGE、jieba+BM25、OpenAI 兼容 LLM 接入层
+> 面向中文新闻知识库问答（约 8.9 万篇 / 35 万向量块），自研混合检索 + ReAct Agent + 失败记忆 + 上下文压缩，并配套三层评测与消融实验。  
+> 仓库：https://github.com/xieruyi702-netizen/resume ｜ Python / ChromaDB / BGE / jieba+BM25 / OpenAI 兼容 LLM
 
-- **混合检索**：中文父子分块（child 检索 / parent 生成）；BM25(jieba) + bge-small-zh 双路召回、RRF(k=60) 融合、按 parent 去重；Hit@5=0.95，MRR=0.74。
-- **Agent**：手写 ReAct 工具循环（检索 query 自主改写，≤4 步），function calling 接入；答案带来源引用，库外问题拒答（拒答准确率 1.0）。
-- **失败记忆**：失败轨迹经 LLM 根因归因（outcome / root_cause / lesson 结构化）写入向量库，新任务按相似度阈值召回注入 prompt；机制经消融验证（召回相似度 1.0、注入改变生成）。
-- **三层评测**：基于 CRUD-RAG 自建 42 条中文黄金集（单跳 / 多跳 / 拒答）；检索层 Hit@k / MRR / Recall@k / nDCG@k + 答案层关键词规则 + **GLM 跨源 LLM-as-Judge 语义判分（判对率 1.0）**；用 Judge 仲裁规则评测假阴性（9 条误判中 8 条证实），并发现规则口径存在 ±5pp 运行间方差——据此设计三口径指标体系。运行历史落盘可对比；评测全程成本 < 3 元。
+- **混合检索**：父子分块（child 检索 / parent 生成）；BM25(jieba) + bge-small-zh 双路召回、RRF(k=60) 融合、parent 去重；检索层 Hit@5=**0.95**，MRR=**0.74**。
+- **Agent**：手写 ReAct 工具循环（query 自主改写，≤4 步）+ function calling；答案带来源引用；另实现 Plan-and-Execute 可切换（全量对照：token **−35%**，单跳基准上拒答弱于 ReAct，按题型路由）。
+- **失败记忆**：失败轨迹 LLM 归因（outcome / root_cause / lesson）入库，按相似度阈值召回注入 prompt；`--memory` 消融：召回相似度达 1.0，注入可改变生成；规则准确率未显著抬升（同批失败未跨阈值），故以机制验证 + Judge 口径为主叙事。
+- **上下文压缩**：证据按分数贪心装入字符预算（parent 去重）；全量 42 条 `--compress` 消融：prompt 字符 **−33.8%**、证据 **−40.8%**，关键词 0.80→0.775，拒答 0.5→1.0。
+- **三层评测**：CRUD-RAG 自建 42 条黄金集（单跳 / 多跳 / 拒答）；Hit@k / MRR / Recall@k / nDCG@k + 关键词规则 + **GLM 跨源 Judge**（semantic_correct，判对率 1.0）；Judge 纠规则假阴性（9 条中 8 条属关键词误伤），并量化规则口径 ±5pp 运行方差 → 三口径指标体系；评测成本 &lt; 3 元。
 
 ---
 
 ## 自我评价（可选）
 
-熟悉推荐链路里「延迟、锁、频控、降级」类工程问题，能把在线学习策略（UCB）稳定落地；同时具备 RAG / Agent 全链路自研与评测意识，重视可复现实验与失败归因，而不是只堆模型调用。
+熟悉推荐链路里「延迟、锁、频控、降级」类工程问题，能把在线学习策略（UCB）稳定落地；同时具备 RAG / Agent 全链路自研与评测意识，重视可复现消融与失败归因，而不是只堆模型调用。
 
 ---
 
 ## 填写说明（写完可删）
 
-1. 补全顶部姓名、联系方式、教育背景、公司名与实习时间、GitHub。
-2. 实习条目已按飞书文档《实验策略与语音匹配服务》压缩为简历粒度；面试深挖仍以飞书原文为准。
-3. Agentic-RAG **只写代码已落地且可背书的内容**。禁止写：LangGraph、Plan-and-Execute、上下文压缩/token 预算、工具调用 F1、faithfulness（实际是 semantic_correct + relevancy）、未跑消融的 Cross-Encoder、「人工校对」（实际是自动关键词 + 跨源 Judge 复核）。
-4. 数字（Hit@5 / MRR / 拒答 / Judge / 成本）须与本地 eval history 一致；投递前再对一下最新一次跑分。
+1. 补全顶部姓名、联系方式、教育背景、公司名与实习时间。
+2. 实习条目来自飞书《实验策略与语音匹配服务》；面试深挖以飞书原文为准。
+3. Agentic-RAG 数字对齐 `agentic-rag-zh/evals/history/` 与 `EXPERIMENTS.md`。禁止写：LangGraph、工具 F1、faithfulness、未跑消融的 Cross-Encoder、「记忆显著提升准确率」（当前数据不支持）。
+4. 投递前可删本说明段。
 

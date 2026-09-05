@@ -12,3 +12,4 @@ class AgentTrace:
     completion_chars: int = 0
     error: str | None = None
     plan: dict | None = None  # PAE 模式：规划摘要 {understanding, n_steps, queries, fallback}
+    compress: dict | None = None  # {on, before_chars, after_chars, dropped, ...}

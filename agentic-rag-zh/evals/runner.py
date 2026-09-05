@@ -23,7 +23,7 @@ def load_cases(path: Path, limit: int | None = None) -> list[dict]:
 
 def run_eval(tag: str, *, with_llm: bool = False, memory_on: bool = False,
              use_judge: bool = False, limit: int | None = None, top_k: int = 5,
-             mode: str = "react") -> dict:
+             mode: str = "react", compress_on: bool = False) -> dict:
     started = time.time()
     cases = load_cases(config.GOLDEN_PATH, limit)
     retriever = get_retriever()
@@ -54,6 +54,7 @@ def run_eval(tag: str, *, with_llm: bool = False, memory_on: bool = False,
     rel_sum = 0.0
     effective_ok = 0
     steps_sum = chars_sum = 0
+    compress_before = compress_after = compress_dropped = 0
 
     for i, case in enumerate(cases, 1):
         expected = case["expected_sources"]
@@ -80,7 +81,7 @@ def run_eval(tag: str, *, with_llm: bool = False, memory_on: bool = False,
         }
 
         if with_llm:
-            trace = agent.run(case["question"], memory_on=memory_on)
+            trace = agent.run(case["question"], memory_on=memory_on, compress=compress_on)
             if case["expect_refusal"]:
                 n_ref += 1
                 row["refusal_pass"] = ans_ok = metrics.refusal_ok(trace.answer)
@@ -117,6 +118,11 @@ def run_eval(tag: str, *, with_llm: bool = False, memory_on: bool = False,
             row["steps"] = trace.steps
             if trace.plan:
                 row["plan"] = trace.plan
+            if trace.compress:
+                row["compress"] = trace.compress
+                compress_before += int(trace.compress.get("before_chars") or 0)
+                compress_after += int(trace.compress.get("after_chars") or 0)
+                compress_dropped += int(trace.compress.get("dropped") or 0)
             steps_sum += trace.steps
             chars_sum += trace.prompt_chars + trace.completion_chars
 
@@ -143,6 +149,10 @@ def run_eval(tag: str, *, with_llm: bool = False, memory_on: bool = False,
         "avg_steps": round(steps_sum / len(per_case), 2) if with_llm else None,
         "total_char_tokens": chars_sum if with_llm else None,
         "memory_on": memory_on,
+        "compress_on": compress_on,
+        "compress_before_chars": compress_before if with_llm else None,
+        "compress_after_chars": compress_after if with_llm else None,
+        "compress_dropped_chunks": compress_dropped if with_llm else None,
         "elapsed_s": round(time.time() - started, 1),
     }
 

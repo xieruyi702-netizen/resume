@@ -1,6 +1,6 @@
 """Plan-and-Execute agent：规划 → 执行 → 失败重规划 → 汇总作答。
 
-与 ReAct（graph_react 中的 Agent）同接口：run(question, memory_on) -> AgentTrace，
+与 ReAct（Agent）同接口：run(question, memory_on, compress) -> AgentTrace，
 评测 runner 可通过 --mode react|pae 切换，其余（检索器/Judge/记忆）完全复用。
 
 流程：
@@ -13,6 +13,7 @@ import json
 import re
 
 from src import config
+from src.context.compressor import clip_memory_hits, format_evidence, pack_chunks
 from src.trace import AgentTrace
 
 PLANNER_SYSTEM = """你是 RAG 系统的检索规划器。针对用户问题制定检索计划，只输出一个 JSON 对象：
@@ -57,7 +58,6 @@ class PlanExecuteAgent:
         self.retriever = retriever or get_retriever()
         self.memory = memory
 
-    # ---- planner ----
     def _plan(self, question: str, memory_hits: list[dict], trace: AgentTrace) -> dict:
         system = PLANNER_SYSTEM
         if memory_hits:
@@ -75,7 +75,6 @@ class PlanExecuteAgent:
         trace.completion_chars += len(resp.content or "")
         plan = _parse_json(resp.content or "")
         if not plan or not plan.get("steps"):
-            # 兜底：解析失败退化为单步计划（等价于直接检索）
             plan = {"understanding": "直接检索", "answer_strategy": "依据检索结果回答",
                     "steps": [{"id": 1, "query": question, "expect": "相关文档"}],
                     "fallback": True}
@@ -84,9 +83,7 @@ class PlanExecuteAgent:
             plan["steps"] = [{"id": 1, "query": question, "expect": "相关文档"}]
         return plan
 
-    # ---- executor + replanner ----
     def _execute(self, question: str, plan: dict, trace: AgentTrace) -> list:
-        """执行各步检索，返回去重后的证据块列表。"""
         evidence, seen_parents = [], set()
         for step in plan["steps"]:
             query = step["query"]
@@ -94,7 +91,7 @@ class PlanExecuteAgent:
             trace.tool_calls.append({"query": query, "k": config.TOP_K, "n_results": len(chunks)})
             trace.retrieved.extend(c.doc_id for c in chunks)
 
-            if not chunks:  # 重规划：换表述重试一次
+            if not chunks:
                 resp = self.llm.chat([{"role": "user", "content": REPLANNER_PROMPT.format(
                     query=query, question=question)}])
                 trace.steps += 1
@@ -106,23 +103,34 @@ class PlanExecuteAgent:
                                              "n_results": len(chunks), "replan": True})
                     trace.retrieved.extend(c.doc_id for c in chunks)
 
-            for c in chunks:  # 跨步骤 parent 去重
+            for c in chunks:
                 if c.parent_id in seen_parents:
                     continue
                 seen_parents.add(c.parent_id)
                 evidence.append(c)
-                if len(evidence) >= 8:  # 证据总量上限，控制回答阶段上下文
+                if len(evidence) >= 8:
                     return evidence
         return evidence
 
-    # ---- answer ----
-    def _answer(self, question: str, plan: dict, evidence: list, trace: AgentTrace) -> str:
+    def _answer(self, question: str, plan: dict, evidence: list, trace: AgentTrace,
+                compress: bool = False) -> str:
         if evidence:
-            material = "\n\n".join(
-                f"[{i}] (来源: {c.doc_id}) {c.parent_text}" for i, c in enumerate(evidence, 1)
-            )
+            if compress:
+                evidence, stats = pack_chunks(evidence)
+                trace.compress = {"on": True, **stats}
+            else:
+                before = sum(len(c.parent_text or "") for c in evidence)
+                trace.compress = {
+                    "on": False, "before_n": len(evidence), "after_n": len(evidence),
+                    "before_chars": before, "after_chars": before, "dropped": 0,
+                }
+            material = format_evidence(evidence)
             user = f"用户问题：{question}\n\n检索到的资料：\n{material}\n\n请回答。"
         else:
+            trace.compress = {
+                "on": compress, "before_n": 0, "after_n": 0,
+                "before_chars": 0, "after_chars": 0, "dropped": 0,
+            }
             user = f"用户问题：{question}\n\n（检索无任何结果）"
         resp = self.llm.chat([{"role": "system", "content": ANSWER_SYSTEM},
                               {"role": "user", "content": user}])
@@ -131,17 +139,23 @@ class PlanExecuteAgent:
         trace.completion_chars += len(resp.content or "")
         return resp.content or ""
 
-    def run(self, question: str, memory_on: bool = True) -> AgentTrace:
+    def run(self, question: str, memory_on: bool = True,
+            compress: bool | None = None) -> AgentTrace:
+        use_compress = config.USE_COMPRESS if compress is None else compress
         trace = AgentTrace()
         memory_hits = self.memory.recall(question) if (self.memory and memory_on) else []
+        if use_compress and memory_hits:
+            memory_hits = clip_memory_hits(memory_hits)
         try:
             plan = self._plan(question, memory_hits, trace)
-            trace.plan = {"understanding": plan.get("understanding", ""),
-                          "n_steps": len(plan["steps"]),
-                          "queries": [s["query"][:40] for s in plan["steps"]],
-                          "fallback": plan.get("fallback", False)}
+            trace.plan = {
+                "understanding": plan.get("understanding", ""),
+                "n_steps": len(plan["steps"]),
+                "queries": [s["query"][:40] for s in plan["steps"]],
+                "fallback": plan.get("fallback", False),
+            }
             evidence = self._execute(question, plan, trace)
-            trace.answer = self._answer(question, plan, evidence, trace)
+            trace.answer = self._answer(question, plan, evidence, trace, compress=use_compress)
         except Exception as e:
             trace.error = str(e)
             trace.answer = trace.answer or f"(agent 出错: {e})"

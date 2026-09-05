@@ -5,6 +5,7 @@ v1 只挂 retrieve 一个工具；新增工具在这里注册 schema 和分支�
 import json
 
 from src import config
+from src.context.compressor import format_evidence, pack_chunks
 from src.trace import AgentTrace
 
 TOOLS_SCHEMA = [{
@@ -24,7 +25,8 @@ TOOLS_SCHEMA = [{
 }]
 
 
-def execute_tool(name: str, arguments: str, retriever, trace: AgentTrace) -> str:
+def execute_tool(name: str, arguments: str, retriever, trace: AgentTrace,
+                 compress: bool | None = None) -> str:
     """执行一次工具调用，返回给 LLM 的文本结果，并把调用写入 trace。"""
     if name != "retrieve":
         return f"Unknown tool: {name}"
@@ -36,5 +38,25 @@ def execute_tool(name: str, arguments: str, retriever, trace: AgentTrace) -> str
     trace.retrieved.extend(c.doc_id for c in chunks)
     if not chunks:
         return "(检索无结果)"
-    parts = [f"[{i}] (来源: {c.doc_id}) {c.parent_text}" for i, c in enumerate(chunks, 1)]
-    return "\n\n".join(parts)
+
+    use_compress = config.USE_COMPRESS if compress is None else compress
+    if use_compress:
+        chunks, stats = pack_chunks(chunks)
+        prev = trace.compress or {"on": True, "before_chars": 0, "after_chars": 0, "dropped": 0}
+        trace.compress = {
+            "on": True,
+            "before_chars": prev["before_chars"] + stats["before_chars"],
+            "after_chars": prev["after_chars"] + stats["after_chars"],
+            "dropped": prev["dropped"] + stats["dropped"],
+            "budget": stats["budget"],
+        }
+    else:
+        before = sum(len(c.parent_text or "") for c in chunks)
+        prev = trace.compress or {"on": False, "before_chars": 0, "after_chars": 0, "dropped": 0}
+        trace.compress = {
+            "on": False,
+            "before_chars": prev["before_chars"] + before,
+            "after_chars": prev["after_chars"] + before,
+            "dropped": prev["dropped"],
+        }
+    return format_evidence(chunks)
