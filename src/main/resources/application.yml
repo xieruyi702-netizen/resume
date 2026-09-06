@@ -23,11 +23,12 @@ seckill:
     bootstrap: 127.0.0.1:9092
     topic: seckill-points
   voucher-count: 1000
-  # 秒杀接口限流：mode=token|leaky；容量 200，速率 5000/s（令牌补充 / 漏出）
+  # 秒杀接口限流：mode=token|leaky；shards 分片降锁竞争（总配额均分）
   rate:
     mode: token
     capacity: 200
     refill-per-sec: 5000
+    shards: 8   # 分片降锁竞争；JMeter 扫参峰值约 token/shards=8
   # 订单超时未支付自动取消（压测 3s，生产为分钟级）
   order-timeout-ms: 3000
   # Redis 秒杀残缺态定时补偿：stock+SCARD(users) 应等于 initial-stock

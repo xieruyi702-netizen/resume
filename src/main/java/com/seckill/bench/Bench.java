@@ -220,10 +220,11 @@ public class Bench implements ApplicationRunner {
             seckill.rateLimiter.resetStats();
             t0 = System.nanoTime();
             runBurst(threads, 500_000, u -> seckill.rateLimiter.tryAcquire());
-            long secs = (System.nanoTime() - t0) / 1_000_000_000;
+            double secs = (System.nanoTime() - t0) / 1e9;
+            long qps = Math.round(500_000 / secs);
             System.out.printf(Locale.ROOT,
-                    "  [rate-limit/%s] 容量200/速率2000每秒：50万请求 %d 秒，通过=%d 拒绝=%d（fail-fast）%n",
-                    mode.name().toLowerCase(), secs,
+                    "  [rate-limit/%s] 容量200/速率2000每秒：50万请求 %.3f 秒，判定吞吐=%,d/s，通过=%d 拒绝=%d（fail-fast）%n",
+                    mode.name().toLowerCase(), secs, qps,
                     seckill.rateLimiter.passed(), seckill.rateLimiter.rejected());
         }
         seckill.rateLimiter.setMode(DualRateLimiter.Mode.TOKEN);

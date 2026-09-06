@@ -18,3 +18,6 @@ rag/kb/embeddings.npy
 __pycache__/
 *.pyc
 .env
+bench/*-report/
+bench/report-mixed/
+bench/sweep-results.csv

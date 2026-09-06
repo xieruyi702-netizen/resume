@@ -63,7 +63,8 @@ public class SeckillService {
                           @Value("${seckill.snowflake.datacenter-id}") long datacenterId,
                           @Value("${seckill.rate.capacity}") long capacity,
                           @Value("${seckill.rate.refill-per-sec}") double refillPerSec,
-                          @Value("${seckill.rate.mode:token}") String rateMode) {
+                          @Value("${seckill.rate.mode:token}") String rateMode,
+                          @Value("${seckill.rate.shards:1}") int shards) {
         this.master = master;
         this.voucherMapper = voucherMapper;
         this.orderMapper = orderMapper;
@@ -72,7 +73,7 @@ public class SeckillService {
         this.snowflake = new SnowflakeIdGen(workerId, datacenterId);
         DualRateLimiter.Mode mode = "leaky".equalsIgnoreCase(rateMode)
                 ? DualRateLimiter.Mode.LEAKY : DualRateLimiter.Mode.TOKEN;
-        this.rateLimiter = new DualRateLimiter(capacity, refillPerSec, mode);
+        this.rateLimiter = new DualRateLimiter(capacity, refillPerSec, mode, shards);
     }
 
     public enum Result { SUCCESS, RATE_LIMITED, SOLD_OUT, DUPLICATED, DB_ERROR }

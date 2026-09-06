@@ -1,11 +1,10 @@
 package com.seckill.seckill;
 
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * 令牌桶限流：容量 capacity，匀速补充 refillPerSec。
- * syncaddToken 计算自上次补充至今应补令牌数（惰性补充，无需后台线程）。
- * 允许桶内突发，适合秒杀开闸瞬间的短时高峰。
+ * 惰性补充，无需后台线程；允许桶内突发。
  */
 public class TokenBucket implements RateLimiter {
 
@@ -13,8 +12,8 @@ public class TokenBucket implements RateLimiter {
     private double refillPerNano;
     private double tokens;
     private long lastRefillNanos;
-    private final AtomicLong passed = new AtomicLong();
-    private final AtomicLong rejected = new AtomicLong();
+    private final LongAdder passed = new LongAdder();
+    private final LongAdder rejected = new LongAdder();
 
     public TokenBucket(long capacity, double refillPerSec) {
         this.capacity = capacity;
@@ -23,16 +22,15 @@ public class TokenBucket implements RateLimiter {
         this.lastRefillNanos = System.nanoTime();
     }
 
-    /** 尝试获取 1 个令牌；拿不到立即拒绝（fail-fast，不排队） */
     @Override
     public synchronized boolean tryAcquire() {
         refill();
         if (tokens >= 1) {
             tokens -= 1;
-            passed.incrementAndGet();
+            passed.increment();
             return true;
         }
-        rejected.incrementAndGet();
+        rejected.increment();
         return false;
     }
 
@@ -46,15 +44,14 @@ public class TokenBucket implements RateLimiter {
     }
 
     @Override
-    public long passed() { return passed.get(); }
+    public long passed() { return passed.sum(); }
 
     @Override
-    public long rejected() { return rejected.get(); }
+    public long rejected() { return rejected.sum(); }
 
     @Override
-    public void resetStats() { passed.set(0); rejected.set(0); }
+    public void resetStats() { passed.reset(); rejected.reset(); }
 
-    /** 压测/运维用：运行时调整桶参数 */
     @Override
     public synchronized void reconfigure(long newCapacity, double refillPerSec) {
         this.tokens = Math.min(this.tokens, newCapacity);

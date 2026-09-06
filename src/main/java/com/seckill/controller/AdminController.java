@@ -80,36 +80,36 @@ public class AdminController {
         return Map.of("code", 0, "msg", "reset to stock=" + stock);
     }
 
-    /** 切换限流算法：token=令牌桶 / leaky=漏桶；可选同步调整容量与速率 */
+    /** 切换限流：token|leaky；可选 capacity/ratePerSec/shards */
     @PostMapping("/rate")
     public Map<String, Object> rate(@RequestParam String mode,
                                     @RequestParam(required = false) Long capacity,
-                                    @RequestParam(required = false) Double ratePerSec) {
+                                    @RequestParam(required = false) Double ratePerSec,
+                                    @RequestParam(required = false) Integer shards) {
         DualRateLimiter.Mode m;
         if ("leaky".equalsIgnoreCase(mode)) m = DualRateLimiter.Mode.LEAKY;
         else if ("token".equalsIgnoreCase(mode)) m = DualRateLimiter.Mode.TOKEN;
         else return Map.of("code", 1, "msg", "mode must be token|leaky");
-        seckillService.rateLimiter.setMode(m);
-        if (capacity != null && ratePerSec != null) {
-            seckillService.rateLimiter.reconfigure(capacity, ratePerSec);
-        }
-        seckillService.rateLimiter.resetStats();
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("code", 0);
-        out.put("mode", seckillService.rateLimiter.name());
-        out.put("passed", seckillService.rateLimiter.passed());
-        out.put("rejected", seckillService.rateLimiter.rejected());
-        return out;
+        DualRateLimiter lim = seckillService.rateLimiter;
+        lim.setMode(m);
+        if (capacity != null && ratePerSec != null) lim.reconfigure(capacity, ratePerSec);
+        if (shards != null) lim.setShardCount(shards);
+        lim.resetStats();
+        return rateStats();
     }
 
-    /** 限流统计：当前算法 + 通过/拒绝计数 */
+    /** 限流统计：算法/分片 + 通过/拒绝 */
     @GetMapping("/rate")
     public Map<String, Object> rateStats() {
+        DualRateLimiter lim = seckillService.rateLimiter;
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("code", 0);
-        out.put("mode", seckillService.rateLimiter.name());
-        out.put("passed", seckillService.rateLimiter.passed());
-        out.put("rejected", seckillService.rateLimiter.rejected());
+        out.put("mode", lim.name());
+        out.put("shards", lim.shardCount());
+        out.put("capacity", lim.totalCapacity());
+        out.put("ratePerSec", lim.totalRate());
+        out.put("passed", lim.passed());
+        out.put("rejected", lim.rejected());
         return out;
     }
 

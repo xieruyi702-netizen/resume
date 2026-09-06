@@ -24,7 +24,7 @@ mvn package -DskipTests && docker compose build app   # app 用本地 jar 构建
 
 ## 核心设计
 
-- **双算法限流**：令牌桶（允许突发）与漏桶（平滑出水）可切换；`POST /admin/rate?mode=token|leaky`
+- **双算法限流**：令牌桶 / 漏桶可切换 + 分片；JMeter 峰值约 6.0k / 5.3k req/s（详见下方扫参总结）；`POST /admin/rate?mode=token|leaky&shards=`
 - **多级缓存 + 三防**：L1 Caffeine → L2 Redis 从库 → MySQL；布隆防穿透、互斥锁+空值防击穿、TTL 抖动防雪崩
 - **秒杀**：限流 → Redis Lua「库存 + 一人一单」→ 同步待支付订单
 - **支付积分**：支付成功 → Kafka → 异步加用户积分（订单 points_status 幂等）
@@ -94,14 +94,39 @@ java -cp target/classes:$(cat target/cp.txt) com.seckill.SeckillApplication --be
 总 QPS **30,315**（读 24,236 / 写 6,079），抢券成功 **182,412 单**，全部落库。
 一致性校验（逐券）：`redis余量 + 生效订单数 = 1000` 与 `db余量 + 生效订单数 = 1000` **1000/1000 全部通过**，超卖 0，本地消息表 pending=0。
 
-### 双算法限流对比（容量 200 / 速率 2000每秒，50 万突发）
+### 双算法限流对比（JMeter 扫参总结）
 
-| 算法 | 通过 | 拒绝 | 说明 |
-|---|---:|---:|---|
-| **令牌桶** | **≈361** | ≈499,639 | = 容量 200 + 灌注窗口内补充，与公式吻合 |
-| **漏桶** | **同量级（≈280–360）** | 其余 | 空桶起灌，突发被水位顶住，出水更平滑 |
+实现：`DualRateLimiter` 每分片同时持令牌桶 + 漏桶；总配额均分，请求 `ThreadLocalRandom` 路由降锁竞争；惰性补充、fail-fast。热切换：
 
-二者均 fail-fast 无阻塞。切换：`POST /admin/rate?mode=token|leaky`。
+```bash
+POST /admin/rate?mode=token|leaky&capacity=200&ratePerSec=100&shards=8
+bash bench/run-rate-sweep.sh   # mode × shards × rate 扫参
+```
+
+**各算法峰值（64 线程，容量 200，经 Nginx）**
+
+| 算法 | 最高 QPS | 最佳配置 |
+|---|---:|---|
+| **令牌桶** | **≈6048 req/s** | shards=8，rate=100/s |
+| **漏桶** | **≈5306 req/s** | shards=1，rate=100/s |
+
+扫参摘录：
+
+| 组合 | 端到端吞吐 | 说明 |
+|---|---:|---|
+| token × 8 分片 × rate=100 | **≈6.0k** | 拒绝占多数，fail-fast 路径；全局最高 |
+| token × 1 分片 × rate=100 | ≈5.5k | 单锁基线 |
+| leaky × 1 分片 × rate=100 | ≈5.3k | 漏桶峰值；再加分片 QPS 下降 |
+| token × 8 分片 × rate=50000 | ≈1.1k | 基本不限流，瓶颈在 Lua + 建单 |
+
+结论：
+
+- 拉高**接口总 QPS**（含限流拒绝）→ 令牌桶 + 适中分片（约 8）+ 收紧速率  
+- 漏桶宜少分片；多分片 + 随机路由会让漏桶更不稳、总 QPS 更差  
+- 拉高**成交吞吐**→ 提高 `ratePerSec`；此时限流不是瓶颈，分片收益很小  
+- JMeter 提到 128 线程未再涨（更堵）；限流判定需同步，异步帮不上判定热路径  
+
+默认配置见 `application.yml`：`seckill.rate.shards=8`。
 
 ## 踩坑记录（面试素材）
 
