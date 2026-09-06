@@ -212,6 +212,12 @@ def main() -> None:
     ap.add_argument("--interactive", action="store_true")
     ap.add_argument("--no-llm", action="store_true")
     ap.add_argument("--agentic", action="store_true", help="启用 Agentic RAG 工具循环")
+    ap.add_argument(
+        "--mode",
+        choices=["react", "pae"],
+        default=None,
+        help="agentic 子模式：react（默认）或 pae（Plan-and-Execute）",
+    )
     ap.add_argument("--user", default="default", help="用户 id：短期/长期记忆按用户隔离")
     ap.add_argument("--session", default=None, help="同一用户下的会话 id（复用短期记忆）")
     args = ap.parse_args()
@@ -219,15 +225,17 @@ def main() -> None:
     memory = MemoryHub(user_id=args.user, session_id=args.session)
 
     def handle(q: str):
-        if args.agentic:
+        if args.agentic or args.mode:
             from agentic import run_agentic
-            return run_agentic(q, index=index, memory=memory, use_llm=not args.no_llm)
+            mode = args.mode or "react"
+            return run_agentic(q, index=index, memory=memory, use_llm=not args.no_llm, mode=mode)
         return answer(index, q, args.top_k, memory, use_llm=not args.no_llm)
 
     if args.interactive or not args.query:
+        mode = args.mode or ("react" if args.agentic else "rag")
         print(
             f"美食汇 Agent user={memory.user_id} session={memory.session.session_id} "
-            f"agentic={args.agentic}（输入 q 退出）"
+            f"mode={mode}（输入 q 退出）"
         )
         while True:
             q = input("> ").strip()

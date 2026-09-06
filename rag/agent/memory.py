@@ -1,15 +1,15 @@
-"""美食汇记忆：短期 Redis + 长期向量库（Chroma），按用户隔离。
+"""美食汇记忆：短期 Redis + 长期 Memdir 文件笔记，按用户隔离。
 
 短期（会话）
-  - Redis List/Hash：近轮 Q/A、焦点菜
+  - Redis List/Hash：近轮 Q/A、焦点菜、会话滚动摘要
   - 淘汰：条数 LTRIM + Key TTL（默认 24h）
 
 长期（用户）
-  - Chroma 向量库：偏好/忌口/失败教训，语义召回
-  - 淘汰：每用户上限（默认 200），超出删最旧
+  - Memdir：MEMORY.md 索引 + 主题 Markdown + PROFILE.md（忌口/偏好）
+  - 淘汰：索引行数上限；注入时预算截断
 
 上下文组装（ContextAssembler，有预算）
-  1) 长期召回（稳定约束，忌口优先）
+  1) PROFILE / 相关主题（稳定约束，忌口优先）
   2) 会话 working + 近轮对话
   3) 总字符封顶，避免挤占检索证据位
 """
@@ -20,7 +20,7 @@ import os
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +32,141 @@ def _safe_user_id(user_id: str) -> str:
 
 
 def _store_root() -> Path:
+    env = os.environ.get("MEISHI_MEMORY_STORE")
+    if env:
+        return Path(env)
     return Path(__file__).resolve().parents[1] / "memory_store"
+
+
+# ---------- Memdir：文件化长期笔记（对标 Claude Code MEMORY.md）----------
+
+class Memdir:
+    """每用户 MEMORY.md 索引 + 主题 Markdown；可审计、可截断注入。"""
+
+    INDEX_MAX_LINES = 40
+
+    def __init__(self, user_id: str):
+        self.user_id = _safe_user_id(user_id)
+        self.root = _store_root() / "memdir" / self.user_id
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.index_path = self.root / "MEMORY.md"
+        if not self.index_path.exists():
+            self.index_path.write_text(
+                f"# MEMORY · {self.user_id}\n\n> 索引行数上限 {self.INDEX_MAX_LINES}；细则见主题文件。\n\n",
+                encoding="utf-8",
+            )
+
+    def _topic_path(self, topic: str) -> Path:
+        safe = re.sub(r"[^\w\-]", "_", topic)[:40] or "notes"
+        return self.root / f"{safe}.md"
+
+    def upsert(self, topic: str, line: str) -> None:
+        """追加主题条目，并维护索引一行摘要。"""
+        line = (line or "").strip()
+        if not line:
+            return
+        path = self._topic_path(topic)
+        if not path.exists():
+            path.write_text(f"# {topic}\n\n", encoding="utf-8")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"- {line}\n")
+        # 索引：同 topic 只保留最新一行指针
+        idx_lines = self.index_path.read_text(encoding="utf-8").splitlines()
+        header, body = [], []
+        for ln in idx_lines:
+            if ln.startswith("- ["):
+                body.append(ln)
+            else:
+                header.append(ln)
+        pointer = f"- [{topic}]({path.name}) · {line[:60]}"
+        body = [ln for ln in body if f"[{topic}]" not in ln]
+        body.append(pointer)
+        body = body[-self.INDEX_MAX_LINES :]
+        self.index_path.write_text("\n".join(header + body).rstrip() + "\n", encoding="utf-8")
+        if topic in ("allergies", "preferences"):
+            self.refresh_profile()
+
+    def refresh_profile(self) -> None:
+        """汇总忌口/偏好到 PROFILE.md（对标用户级 CLAUDE.local / 档案）。"""
+        lines = [f"# PROFILE · {self.user_id}", ""]
+        for topic, title in (("allergies", "忌口/过敏"), ("preferences", "偏好")):
+            p = self._topic_path(topic)
+            if not p.exists():
+                continue
+            lines.append(f"## {title}")
+            for ln in p.read_text(encoding="utf-8").splitlines():
+                if ln.startswith("- "):
+                    lines.append(ln)
+            lines.append("")
+        (self.root / "PROFILE.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+    def profile_text(self, max_chars: int = 400) -> str:
+        p = self.root / "PROFILE.md"
+        if not p.exists():
+            return ""
+        return p.read_text(encoding="utf-8")[:max_chars]
+
+    def index_text(self, max_chars: int = 600) -> str:
+        text = self.index_path.read_text(encoding="utf-8") if self.index_path.exists() else ""
+        return text[:max_chars]
+
+    def relevant_text(self, query: str, max_topics: int = 3, max_chars: int = 500) -> str:
+        """按汉字重合粗选主题文件（轻量 Relevant Memories）。"""
+        q_chars = set(re.findall(r"[\u4e00-\u9fff]", query))
+        scored: list[tuple[int, Path]] = []
+        for p in self.root.glob("*.md"):
+            if p.name in ("MEMORY.md", "PROFILE.md"):
+                continue
+            body = p.read_text(encoding="utf-8")
+            b_chars = set(re.findall(r"[\u4e00-\u9fff]", body))
+            score = len(q_chars & b_chars)
+            if score > 0:
+                scored.append((score, p))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        parts = []
+        for _, p in scored[:max_topics]:
+            parts.append(p.read_text(encoding="utf-8")[:400])
+        return "\n\n".join(parts)[:max_chars]
+
+    def context_text(self, query: str, max_chars: int = 800) -> str:
+        """长期注入块：PROFILE → 相关主题 → 索引摘要。"""
+        parts = [
+            self.profile_text(max_chars=350),
+            self.relevant_text(query, max_topics=3, max_chars=350),
+            self.index_text(max_chars=200),
+        ]
+        text = "\n\n".join(p for p in parts if p)
+        if not text:
+            return ""
+        return f"长期记忆（用户 {self.user_id}）：\n{text}"[:max_chars]
+
+
+def extract_memories(query: str, result: dict) -> list[tuple[str, str]]:
+    """回合末规则抽取（对标 Extract Memories；无额外 LLM 调用）。"""
+    out: list[tuple[str, str]] = []
+    q = (query or "").strip()
+    if re.search(r"(不吃|忌口|过敏|不要|别放)", q):
+        out.append(("allergies", f"忌口/约束：{q}"))
+    if re.search(r"(喜欢|爱吃|偏好|想吃|常做)", q):
+        out.append(("preferences", f"偏好：{q}"))
+    if result.get("refused"):
+        out.append(("refuse_lessons", f"拒答教训：域外或证据不足勿编造。原问：{q[:80]}"))
+    hits = result.get("hits") or []
+    if not hits:
+        for step in result.get("trace") or []:
+            r = step.get("result") or {}
+            if isinstance(r, dict) and r.get("title") and not r.get("error"):
+                hits = [{"title": r["title"]}]
+                break
+            hs = r.get("hits") if isinstance(r, dict) else None
+            if hs:
+                hits = hs
+                break
+    if hits and not result.get("refused"):
+        title = hits[0].get("title") if isinstance(hits[0], dict) else None
+        if title:
+            out.append(("focus", f"近期焦点菜：{title}"))
+    return out
 
 
 # ---------- 短期：Redis ----------
@@ -115,12 +249,48 @@ class SessionMemory:
             mapping["preference"] = preference
         if not mapping:
             return
+        self._set_working(mapping)
+
+    def _set_working(self, mapping: dict[str, str]) -> None:
+        if not mapping:
+            return
         if self._mem is not None:
             self._mem["working"].update(mapping)
             return
         assert self._r is not None
         self._r.hset(self._k_work(), mapping=mapping)
         self._touch_ttl()
+
+    def set_session_summary(self, summary: str) -> None:
+        self._set_working({"session_summary": summary[:500]})
+
+    def maybe_roll_summary(self) -> None:
+        """轮次够多时滚一份规则摘要，塞进 working，减轻近轮占位（对标 Session Memory）。"""
+        every = int(os.environ.get("MEISHI_SUMMARY_EVERY", "6"))
+        turns = self.recent_turns(self.max_turns)
+        if len(turns) < every:
+            return
+        focus = self.working.get("focus_dish", "")
+        allergies, prefs, asks = [], [], []
+        for t in turns:
+            c = str(t.get("content") or "")
+            if t.get("role") == "user":
+                asks.append(c[:40])
+                if re.search(r"(不吃|忌口|过敏|不要|别放)", c):
+                    allergies.append(c[:50])
+                if re.search(r"(喜欢|爱吃|偏好|想吃)", c):
+                    prefs.append(c[:50])
+        parts = []
+        if focus:
+            parts.append(f"焦点菜={focus}")
+        if allergies:
+            parts.append("忌口=" + "；".join(allergies[-2:]))
+        if prefs:
+            parts.append("偏好=" + "；".join(prefs[-2:]))
+        if asks:
+            parts.append("近问=" + " | ".join(asks[-3:]))
+        if parts:
+            self.set_session_summary("；".join(parts))
 
     def recent_turns(self, n: int = 6) -> list[dict]:
         if self._mem is not None:
@@ -138,9 +308,14 @@ class SessionMemory:
     def context_text(self, max_chars: int = 1200) -> str:
         parts = [f"用户：{self.user_id}"]
         w = self.working
-        if w:
-            parts.append("当前会话状态：" + json.dumps(w, ensure_ascii=False))
-        for t in self.recent_turns(6):
+        if w.get("session_summary"):
+            parts.append("会话摘要：" + w["session_summary"])
+        # 有摘要时少带近轮，优先摘要（压缩）
+        turn_n = 3 if w.get("session_summary") else 6
+        rest_w = {k: v for k, v in w.items() if k != "session_summary"}
+        if rest_w:
+            parts.append("当前会话状态：" + json.dumps(rest_w, ensure_ascii=False))
+        for t in self.recent_turns(turn_n):
             parts.append(f"{t.get('role')}: {str(t.get('content', ''))[:400]}")
         return "\n".join(parts)[-max_chars:]
 
@@ -151,153 +326,6 @@ class SessionMemory:
             if focus not in q:
                 return f"{focus} {q}"
         return q
-
-
-# ---------- 长期：Chroma 向量库 ----------
-
-class LongTermMemory:
-    """按用户隔离的长期记忆；Chroma 语义召回 + 每用户条数淘汰。"""
-
-    def __init__(
-        self,
-        user_id: str,
-        persist_dir: Path | None = None,
-        max_per_user: int | None = None,
-    ):
-        self.user_id = _safe_user_id(user_id)
-        self.max_per_user = max_per_user or int(os.environ.get("MEISHI_LTM_MAX_PER_USER", "200"))
-        root = persist_dir or Path(
-            os.environ.get("MEISHI_CHROMA_PATH")
-            or str(_store_root() / "chroma_ltm")
-        )
-        root.mkdir(parents=True, exist_ok=True)
-        self._col = None
-        self._embedder = None
-        self._fallback: list[dict] = []  # Chroma 不可用时退化为内存列表
-        try:
-            import chromadb
-            from chromadb.config import Settings
-
-            client = chromadb.PersistentClient(
-                path=str(root),
-                settings=Settings(anonymized_telemetry=False),
-            )
-            self._col = client.get_or_create_collection(
-                name="meishi_ltm",
-                metadata={"hnsw:space": "cosine"},
-            )
-        except Exception:
-            self._col = None
-
-    def _get_embedder(self):
-        if self._embedder is None:
-            from embedder import get_embedder
-            self._embedder = get_embedder()
-        return self._embedder
-
-    def _embed(self, texts: list[str]) -> list[list[float]]:
-        return self._get_embedder().embed(texts)
-
-    def _evict_if_needed(self) -> None:
-        """超出每用户上限时删除最旧条目。"""
-        if self._col is None:
-            if len(self._fallback) > self.max_per_user:
-                self._fallback = sorted(self._fallback, key=lambda x: x.get("ts", 0))[-self.max_per_user :]
-            return
-        try:
-            got = self._col.get(where={"user_id": self.user_id}, include=["metadatas"])
-            ids = got.get("ids") or []
-            metas = got.get("metadatas") or []
-            if len(ids) <= self.max_per_user:
-                return
-            paired = list(zip(ids, metas))
-            paired.sort(key=lambda x: float((x[1] or {}).get("ts") or 0))
-            drop_n = len(ids) - self.max_per_user
-            drop_ids = [i for i, _ in paired[:drop_n]]
-            if drop_ids:
-                self._col.delete(ids=drop_ids)
-        except Exception:
-            pass
-
-    def remember_fact(self, text: str, tags: list[str] | None = None) -> None:
-        self._add("fact", text=text, tags=tags or [])
-
-    def remember_failure(self, query: str, lesson: str, root_cause: str = "") -> None:
-        blob = f"教训：{lesson}。原因：{root_cause}。原问：{query}"
-        self._add("failure", text=blob, query=query, lesson=lesson, root_cause=root_cause)
-
-    def _add(self, typ: str, text: str, **extra) -> None:
-        mid = f"{self.user_id}:{uuid.uuid4().hex}"
-        ts = time.time()
-        meta = {
-            "user_id": self.user_id,
-            "type": typ,
-            "ts": ts,
-            "tags": ",".join(extra.get("tags") or []) if isinstance(extra.get("tags"), list) else str(extra.get("tags") or ""),
-            "query": str(extra.get("query") or "")[:200],
-            "lesson": str(extra.get("lesson") or "")[:200],
-            "root_cause": str(extra.get("root_cause") or "")[:200],
-        }
-        if self._col is None:
-            self._fallback.append({"id": mid, "text": text, **meta})
-            self._evict_if_needed()
-            return
-        emb = self._embed([text])[0]
-        self._col.add(ids=[mid], documents=[text], embeddings=[emb], metadatas=[meta])
-        self._evict_if_needed()
-
-    def recall(self, query: str, top_k: int = 3) -> list[dict]:
-        if self._col is None:
-            # 字符重合兜底
-            q_chars = set(re.findall(r"[\u4e00-\u9fff]", query))
-            scored = []
-            for it in self._fallback:
-                b_chars = set(re.findall(r"[\u4e00-\u9fff]", it.get("text", "")))
-                score = len(q_chars & b_chars)
-                if it.get("type") == "failure":
-                    score += 0.5
-                if score > 0:
-                    scored.append((score, it))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            return [it for _, it in scored[:top_k]]
-
-        try:
-            qv = self._embed([query])[0]
-            res = self._col.query(
-                query_embeddings=[qv],
-                n_results=max(top_k * 3, top_k),
-                where={"user_id": self.user_id},
-                include=["documents", "metadatas", "distances"],
-            )
-            docs = (res.get("documents") or [[]])[0]
-            metas = (res.get("metadatas") or [[]])[0]
-            dists = (res.get("distances") or [[]])[0]
-            out = []
-            for doc, meta, dist in zip(docs, metas, dists):
-                out.append({
-                    "text": doc,
-                    "type": (meta or {}).get("type", "fact"),
-                    "ts": (meta or {}).get("ts"),
-                    "lesson": (meta or {}).get("lesson", ""),
-                    "root_cause": (meta or {}).get("root_cause", ""),
-                    "score": 1.0 / (1.0 + float(dist or 0)),
-                })
-            return out[:top_k]
-        except Exception:
-            return []
-
-    def context_text(self, query: str, top_k: int = 3, max_chars: int = 800) -> str:
-        hits = self.recall(query, top_k=top_k)
-        if not hits:
-            return ""
-        lines = [f"长期记忆（用户 {self.user_id}）："]
-        for h in hits:
-            if h.get("type") == "failure" or h.get("lesson"):
-                lesson = h.get("lesson") or h.get("text", "")
-                lines.append(f"- 教训：{lesson}" + (f"（因：{h.get('root_cause','')}）" if h.get("root_cause") else ""))
-            else:
-                lines.append(f"- 偏好/事实：{h.get('text','')}")
-        return "\n".join(lines)[:max_chars]
 
 
 # ---------- 上下文组装 ----------
@@ -312,8 +340,8 @@ class ContextBudget:
 
 class ContextAssembler:
     """
-    工业常见组装顺序（记忆侧）：
-      [长期约束] → [会话状态/近轮] → 再与系统提示、检索证据、当前问题拼接。
+    组装顺序：
+      [长期 Memdir/PROFILE] → [会话状态/近轮] → 再与系统提示、检索证据、当前问题拼接。
     长期放前面：忌口等硬约束不易被近轮闲聊冲掉；总预算封顶。
     """
 
@@ -324,13 +352,12 @@ class ContextAssembler:
             total=int(os.environ.get("MEISHI_CTX_TOTAL_CHARS", "2000")),
         )
 
-    def assemble(self, session: SessionMemory, long_term: LongTermMemory, query: str) -> str:
-        ltm = long_term.context_text(query, max_chars=self.budget.long_term)
+    def assemble(self, session: SessionMemory, memdir: Memdir, query: str) -> str:
+        ltm = memdir.context_text(query, max_chars=self.budget.long_term)
         stm = session.context_text(max_chars=self.budget.short_term)
         parts = [p for p in (ltm, stm) if p]
         text = "\n\n".join(parts)
         if len(text) > self.budget.total:
-            # 超总预算时优先保留长期（截断短期尾部）
             keep_ltm = min(len(ltm), self.budget.long_term)
             rest = self.budget.total - keep_ltm - 2
             text = (ltm[:keep_ltm] + ("\n\n" + stm[: max(0, rest)] if stm and rest > 0 else "")).strip()
@@ -338,13 +365,13 @@ class ContextAssembler:
 
 
 class MemoryHub:
-    """用户级记忆入口。"""
+    """用户级记忆入口：Session（Redis）+ Memdir（PROFILE / 主题笔记）。"""
 
     def __init__(
         self,
         user_id: str,
         session_id: str | None = None,
-        long_term_path: Path | None = None,  # 兼容旧参数，忽略；改用 Chroma 目录
+        long_term_path: Path | None = None,  # 兼容旧参数，已忽略
         persist_session: bool = True,
     ):
         self.user_id = _safe_user_id(user_id)
@@ -353,11 +380,12 @@ class MemoryHub:
             session_id=session_id,
             persist=persist_session,
         )
-        self.long_term = LongTermMemory(user_id=self.user_id)
+        self.memdir = Memdir(user_id=self.user_id)
         self.assembler = ContextAssembler()
 
     def inject_block(self, query: str) -> str:
-        return self.assembler.assemble(self.session, self.long_term, query)
+        """注入：PROFILE / Memdir → 短期（含会话摘要）。"""
+        return self.assembler.assemble(self.session, self.memdir, query)
 
     def after_turn(self, query: str, result: dict) -> None:
         self.session.add("user", query)
@@ -377,11 +405,7 @@ class MemoryHub:
             title = hits[0].get("title") if isinstance(hits[0], dict) else None
             if title:
                 self.session.set_focus(dish=title)
-        if re.search(r"(不吃|忌口|过敏|不要)", query):
-            self.long_term.remember_fact(f"用户偏好：{query}", tags=["preference"])
-        if result.get("refused"):
-            self.long_term.remember_failure(
-                query,
-                lesson="域外或证据不足时应拒答，勿编造菜谱",
-                root_cause="OOD/低相关检索",
-            )
+
+        for topic, line in extract_memories(query, result):
+            self.memdir.upsert(topic, line)
+        self.session.maybe_roll_summary()

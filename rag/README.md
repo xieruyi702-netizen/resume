@@ -27,7 +27,7 @@ python rag/scripts/build_testset.py --n-kb 70 --n-missing 15 --n-ood 15
 | 向量 | `BAAI/bge-small-zh-v1.5`（`vector_search`） |
 | 融合 | RRF（`hybrid_search`） |
 
-Agent：**LangChain StructuredTool + LangGraph `create_react_agent`**（tool-calling ReAct）；底层检索/读菜谱仍用本地 `RecipeTools`。  
+Agent：**LangChain `create_tool_calling_agent` + `AgentExecutor`（ReAct）**，以及 **Plan-and-Execute（`--mode pae`）**——先 JSON 计划再顺序执行工具再合成；底层检索/读菜谱仍用本地 `RecipeTools`。  
 工具：`get_recipe` / `get_section` / `recall_memory` / `web_search`（Tavily，可 keyless）；入口 `rag/agent/agentic.py`。
 
 ```bash
@@ -37,19 +37,20 @@ cd rag/agent && python -c "from web_search import tavily_search; import json; pr
 # 短期记忆 Redis（可选；未起则进程内兜底）
 # docker compose -f docker/docker-compose.yml up -d redis-memory
 python rag/agent/agent.py --user alice --session s1 --agentic "宫保鸡丁怎么做"
-# 短期：Redis mem:u:{user}:s:{session}:*（TTL + LTRIM）
-# 长期：Chroma rag/memory_store/chroma_ltm（按 user_id 过滤 + 每用户条数淘汰）
+python rag/agent/agent.py --mode pae --no-llm "宫保鸡丁的原料有哪些"
+# 短期：Redis mem:u:{user}:s:{session}:*（TTL + LTRIM + 会话摘要）
+# 长期：Memdir rag/memory_store/memdir/{user}/（MEMORY.md + PROFILE.md + 主题笔记）
 ```
 
 ### 记忆与上下文组装
 
 | 层 | 存储 | 淘汰 |
 |---|---|---|
-| 会话短期 | 独立 Redis `:6382` | 最近 N 轮 `LTRIM` + Key TTL（默认 24h） |
-| 用户长期 | Chroma 向量库 | 每用户上限（默认 200），超限删最旧 |
-| 注入 Agent | `ContextAssembler` | 长期 ≤800 / 短期 ≤1200 / 总 ≤2000 字符；长期优先 |
+| 会话短期 | 独立 Redis `:6382` | 最近 N 轮 `LTRIM` + Key TTL（默认 24h）；轮次够多滚会话摘要 |
+| 用户长期 | Memdir 文件笔记 | 索引行数上限；注入预算截断 |
+| 注入 Agent | `ContextAssembler` | 长期 ≤800 / 短期 ≤1200 / 总 ≤2000 字符；PROFILE/忌口优先 |
 
-组装顺序：系统策略 → **长期约束（忌口）** → **近轮会话** → 当前问题；检索/工具结果走 tool 观察，不挤进记忆预算。
+组装顺序：系统策略 → **PROFILE / Memdir** → **近轮会话** → 当前问题；检索/工具结果走 tool 观察，不挤进记忆预算。
 
 ## 评测
 

@@ -1,0 +1,37 @@
+{
+  "passed": 6,
+  "total": 6,
+  "rate": 1.0,
+  "cases": [
+    {
+      "name": "allergy_profile",
+      "pass": true,
+      "detail": "profile_has=True inject_has=True"
+    },
+    {
+      "name": "session_summary",
+      "pass": true,
+      "detail": "焦点菜=番茄炒蛋；忌口=不吃香菜，想吃下饭菜第4问；不吃香菜，想吃下饭菜第5问；偏好=不吃香菜，想吃下饭菜第4问；不吃香菜，想吃下饭菜第5问；近问=不吃香菜，想吃下饭菜第3问 | 不吃香菜，想吃下饭菜第4问 | 不吃香菜，想吃下饭菜第5问"
+    },
+    {
+      "name": "title_whitelist",
+      "pass": true,
+      "detail": "blocked=True allowed=True"
+    },
+    {
+      "name": "web_empty_streak",
+      "pass": true,
+      "detail": "first_blocked=True second_cleared=True err2=网络失败: [Errno 8] nodename nor servname provided, or not known"
+    },
+    {
+      "name": "offline_agent_memory",
+      "pass": true,
+      "detail": "remembered=True refused=False mode=agentic-offline"
+    },
+    {
+      "name": "pae_offline",
+      "pass": true,
+      "detail": "planner=rule phases=['execute', 'plan', 'synthesize'] tools=['recall_memory', 'hybrid_search', 'get_section'] refused=False"
+    }
+  ]
+}

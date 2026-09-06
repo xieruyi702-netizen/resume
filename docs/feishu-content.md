@@ -97,7 +97,7 @@
 
 ### 项目定位
 
-高并发读写与检索增强问答放在同一业务壳里练完整闭环：Java 侧券详情读（多级缓存）、秒杀写（限流 + Lua + 订单闭环）、支付后 Kafka 异步加积分；Python 侧 HowToCook 菜谱（约 369 道 Markdown）切片建库、双路召回、LangGraph ReAct Agent、分层记忆与 OOD 拒答。
+高并发读写与检索增强问答放在同一业务壳里练完整闭环：Java 侧券详情读（多级缓存）、秒杀写（限流 + Lua + 订单闭环）、支付后 Kafka 异步加积分；Python 侧 HowToCook 菜谱（约 369 道 Markdown）切片建库、双路召回、LangChain ReAct / Plan-and-Execute、分层记忆与 OOD 拒答。
 
 ### 读链路与秒杀防护
 
@@ -109,7 +109,7 @@
 
 ### 食谱 Agentic RAG
 
-HowToCook 切片建库；关键词 BM25 + 向量双路召回 RRF 融合；LangChain/LangGraph ReAct Agent（生成 DeepSeek V4 Flash）；记忆按用户隔离——短期 Redis（TTL + 条数淘汰），长期 Chroma 向量召回 + 每用户上限淘汰，上下文按预算比例组装（长期忌口优先）；库外菜与非美食问题 OOD 拒答；证据不足才 web_search 且本地优先。
+HowToCook 切片建库；关键词 BM25 + 向量双路召回 RRF 融合；LangChain ReAct（AgentExecutor）与 Plan-and-Execute 双模式（生成 DeepSeek V4 Flash）；记忆按用户隔离——短期 Redis（TTL + 条数淘汰 + 会话摘要），长期 Memdir/PROFILE.md，上下文按预算组装（忌口优先）；库外菜与非美食问题 OOD 拒答；本地连续空结果后才 web_search。
 
 ### 指标与评测
 
@@ -121,7 +121,7 @@ JMeter 64 线程真实漏斗约 3.1k req/s、P99 112ms（Err 0%，余额对账 O
 答：前者是进程内 L1 命中的物理上限；后者含 Nginx、双实例、限流、同步建单、支付事务全链路——主动分两套口径。
 
 问：记忆会串用户/无限涨吗？
-答：不会。Redis key 与 Chroma query 都带 user_id 隔离；短期 LTRIM + TTL，长期每用户上限删最旧；不可用时进程内兜底评测仍可跑。
+答：不会。Redis key 与 Memdir 目录都按 user_id 隔离；短期 LTRIM + TTL，长期索引行数上限 + 注入预算截断；Redis 不可用时进程内兜底评测仍可跑。
 
 问：评测集为什么混库外菜和非食谱？
 答：闭集 RAG 必须会拒答，否则线上乱编比答错更危险。

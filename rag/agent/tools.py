@@ -129,6 +129,26 @@ class RecipeTools:
         self._recipes: list[dict] | None = None
         self._by_title: dict[str, dict] = {}
         self._by_id: dict[str, dict] = {}
+        # PreTool 状态：本轮检索命中菜名白名单；本地连续空结果次数
+        self.allowed_titles: set[str] = set()
+        self.empty_search_streak = 0
+
+    def _note_search_hits(self, hits: list[dict]) -> None:
+        titles = {h.get("title") for h in hits if isinstance(h, dict) and h.get("title")}
+        self.allowed_titles |= {t for t in titles if t}
+        if hits:
+            self.empty_search_streak = 0
+        else:
+            self.empty_search_streak += 1
+
+    def _title_allowed(self, title: str | None) -> bool:
+        if not title:
+            return True  # 仅 doc_id 时由下方解析
+        if not self.allowed_titles:
+            return True  # 尚未检索过则放行（offline 路径）
+        if title in self.allowed_titles:
+            return True
+        return any(title in t or t in title for t in self.allowed_titles)
 
     def _ensure_recipes(self) -> None:
         if self._recipes is not None:
@@ -159,19 +179,33 @@ class RecipeTools:
 
     def keyword_search(self, query: str, top_k: int = 5) -> dict:
         hits = self.index.search(query, top_k=top_k, mode="bm25")
-        return {"tool": "keyword_search", "hits": self._fmt_hits(hits)}
+        fmt = self._fmt_hits(hits)
+        self._note_search_hits(fmt)
+        return {"tool": "keyword_search", "hits": fmt}
 
     def vector_search(self, query: str, top_k: int = 5) -> dict:
         if self.index.vector is None:
+            self._note_search_hits([])
             return {"tool": "vector_search", "error": "向量索引未加载", "hits": []}
         hits = self.index.search(query, top_k=top_k, mode="dense")
-        return {"tool": "vector_search", "hits": self._fmt_hits(hits)}
+        fmt = self._fmt_hits(hits)
+        self._note_search_hits(fmt)
+        return {"tool": "vector_search", "hits": fmt}
 
     def hybrid_search(self, query: str, top_k: int = 5) -> dict:
         hits = self.index.search(query, top_k=top_k, mode="hybrid")
-        return {"tool": "hybrid_search", "hits": self._fmt_hits(hits)}
+        fmt = self._fmt_hits(hits)
+        self._note_search_hits(fmt)
+        return {"tool": "hybrid_search", "hits": fmt}
 
     def get_recipe(self, title: str | None = None, doc_id: str | None = None) -> dict:
+        if title and not self._title_allowed(title):
+            return {
+                "tool": "get_recipe",
+                "error": "菜名不在本轮检索命中白名单，请先 hybrid_search",
+                "title": title,
+                "allowed": sorted(self.allowed_titles)[:10],
+            }
         self._ensure_recipes()
         doc = None
         if doc_id and doc_id in self._by_id:
@@ -185,6 +219,14 @@ class RecipeTools:
                         break
         if not doc:
             return {"tool": "get_recipe", "error": "未找到菜谱", "title": title, "doc_id": doc_id}
+        # doc_id 路径也校验标题白名单（若已有检索）
+        if self.allowed_titles and doc["title"] not in self.allowed_titles:
+            if not any(doc["title"] in t or t in doc["title"] for t in self.allowed_titles):
+                return {
+                    "tool": "get_recipe",
+                    "error": "菜名不在本轮检索命中白名单，请先 hybrid_search",
+                    "title": doc["title"],
+                }
         return {
             "tool": "get_recipe",
             "doc_id": doc["id"],
@@ -198,7 +240,6 @@ class RecipeTools:
         if recipe.get("error"):
             return {**recipe, "tool": "get_section"}
         text = recipe.get("content") or ""
-        # 粗切：按「原料：」「步骤：」等标记
         markers = {
             "简介": "简介：",
             "原料": "原料：",
@@ -227,6 +268,13 @@ class RecipeTools:
         return {"tool": "recall_memory", "text": self.memory.inject_block(query or "")}
 
     def web_search(self, query: str, top_k: int = 5) -> dict:
+        need = int(os.environ.get("MEISHI_WEB_EMPTY_STREAK", "2"))
+        if self.empty_search_streak < need:
+            return {
+                "tool": "web_search",
+                "error": f"本地检索连续空结果未达 {need} 次，已拦截 web_search",
+                "empty_streak": self.empty_search_streak,
+            }
         return tavily_search(query, max_results=top_k)
 
     def dispatch(self, name: str, arguments: dict[str, Any]) -> dict:

@@ -1,40 +1,65 @@
 #!/usr/bin/env python3
-"""Agentic RAG：基于 LangChain / LangGraph ReAct Agent（工具调用循环）。"""
+"""Agentic RAG：LangChain ReAct 与 Plan-and-Execute 双模式。
+
+- react：LangChain tool-calling Agent（边想边调工具）
+- pae  ：Plan-and-Execute（先规划再执行再合成，对标 Claude Code Plan mode）
+"""
 from __future__ import annotations
 
 import argparse
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 from llm import load_dotenv
 from memory import MemoryHub
+from pae import run_pae
 from retriever import build_index
 from tools import TOOL_SPECS, RecipeTools
 
 load_dotenv()
 
-AGENT_SYSTEM = """你是「美食汇」Agentic RAG 助手。通过工具完成菜谱问答，禁止编造未检索到的步骤/用量。
-
-工具策略：
-1) 先 hybrid_search（或 keyword_search / vector_search）；
-2) 锁定菜名后 get_recipe 或 get_section 精读；
-3) 有指代/忌口时 recall_memory；
-4) 本地证据不足再 web_search，并注明网络来源；
-5) 证据足够后直接给出面向用户的中文最终答案。
+# 回退文案；正式以 AGENT.md（对标 CLAUDE.md）为准
+_FALLBACK_SYSTEM = """你是「美食汇」Agentic RAG 助手。通过工具完成菜谱问答，禁止编造未检索到的步骤/用量。
+工具：hybrid_search → get_recipe/get_section；忌口用 recall_memory；本地不足再 web_search。
+模式：react（边想边调）或 pae（先计划后执行）。
 """
 
 
-def _shrink(obj: Any) -> Any:
+def load_agent_md() -> str:
+    """加载项目说明书 AGENT.md。"""
+    path = Path(__file__).resolve().parent / "AGENT.md"
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    except Exception:
+        pass
+    return _FALLBACK_SYSTEM
+
+
+def _shrink(obj: Any, budget: int = 1200) -> Any:
+    """工具结果预算（对标 Claude Code tool-result microcompact）。"""
     s = json.dumps(obj, ensure_ascii=False)
-    if len(s) <= 1800:
+    if len(s) <= budget:
         return obj
     if isinstance(obj, dict):
         slim = dict(obj)
         if "content" in slim and isinstance(slim["content"], str):
-            slim["content"] = slim["content"][:800] + "…"
+            slim["content"] = slim["content"][:500] + "…（已截断，可用 get_section 精读）"
         if "hits" in slim and isinstance(slim["hits"], list):
-            slim["hits"] = slim["hits"][:3]
+            slim["hits"] = [
+                {
+                    k: (v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v)
+                    for k, v in h.items()
+                }
+                if isinstance(h, dict)
+                else h
+                for h in slim["hits"][:3]
+            ]
+        if "text" in slim and isinstance(slim["text"], str):
+            slim["text"] = slim["text"][:600] + "…"
         return slim
     return obj
 
@@ -43,7 +68,7 @@ def _dumps(obj: Any) -> str:
     return json.dumps(_shrink(obj), ensure_ascii=False)
 
 
-def _build_langchain_tools(rt: RecipeTools):
+def _build_langchain_tools(rt: RecipeTools, *, allow_web: bool = True):
     """把现有 RecipeTools 包装成 LangChain StructuredTool。"""
     from langchain_core.tools import StructuredTool
 
@@ -72,7 +97,9 @@ def _build_langchain_tools(rt: RecipeTools):
         return _dumps(rt.recall_memory(query))
 
     def web_search(query: str, top_k: int = 5) -> str:
-        """互联网检索（Tavily）。仅本地知识库不足时使用。"""
+        """互联网检索（Tavily）。仅本地连续空结果后放行（RecipeTools 门控）。"""
+        if not allow_web:
+            return _dumps({"error": "本轮关闭 web_search"})
         return _dumps(rt.web_search(query, top_k=top_k))
 
     return [
@@ -110,59 +137,57 @@ def _run_langchain_agent(
     *,
     max_steps: int = 4,
     memory_block: str = "",
+    allow_web: bool = True,
 ) -> tuple[str, list[dict]]:
-    """LangGraph create_react_agent：模型 tool-calling → 执行工具 → 直到最终回答。"""
-    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-    from langgraph.prebuilt import create_react_agent
+    """LangChain tool-calling Agent + AgentExecutor（不依赖 LangGraph）。"""
+    from langchain.agents import AgentExecutor, create_tool_calling_agent
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-    tools = _build_langchain_tools(rt)
+    tools = _build_langchain_tools(rt, allow_web=allow_web)
     llm = _chat_model()
-    # 上下文组装：系统策略 → 预算内记忆（长期约束优先）→ 当前问题；检索证据走工具观察
-    prompt = AGENT_SYSTEM
+    system = load_agent_md()
     if memory_block:
-        prompt = (
-            AGENT_SYSTEM
-            + "\n\n【记忆上下文（已按预算组装：长期约束 → 近轮会话）】\n"
+        system = (
+            system
+            + "\n\n【记忆上下文（Memdir/PROFILE → 近轮会话）】\n"
             + memory_block
             + "\n"
         )
-    agent = create_react_agent(llm, tools, prompt=prompt)
 
-    # recursion_limit ≈ 每轮模型+工具各算一步，留余量
-    result = agent.invoke(
-        {"messages": [HumanMessage(content=f"用户问题：{question}")]},
-        config={"recursion_limit": max(10, max_steps * 3)},
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system),
+        ("human", "{input}"),
+        MessagesPlaceholder("agent_scratchpad"),
+    ])
+    agent = create_tool_calling_agent(llm, tools, prompt)
+    executor = AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=False,
+        max_iterations=max(1, max_steps),
+        handle_parsing_errors=True,
+        return_intermediate_steps=True,
     )
-    messages = result.get("messages") or []
+
+    result = executor.invoke({"input": f"用户问题：{question}"})
+    final = str(result.get("output") or "").strip()
     trace: list[dict] = []
-    final = ""
+    for i, step in enumerate(result.get("intermediate_steps") or []):
+        action, observation = step[0], step[1]
+        entry: dict[str, Any] = {
+            "step": i,
+            "tool": getattr(action, "tool", None),
+            "arguments": getattr(action, "tool_input", {}) or {},
+        }
+        try:
+            entry["result"] = json.loads(observation) if isinstance(observation, str) else observation
+        except Exception:
+            entry["result"] = {"raw": str(observation)[:500]}
+        trace.append(entry)
 
-    for i, m in enumerate(messages):
-        if isinstance(m, AIMessage):
-            tool_calls = getattr(m, "tool_calls", None) or []
-            if tool_calls:
-                for tc in tool_calls:
-                    trace.append({
-                        "step": len(trace),
-                        "tool": tc.get("name"),
-                        "arguments": tc.get("args") or {},
-                    })
-            content = (m.content or "").strip() if isinstance(m.content, str) else str(m.content or "")
-            if content and not tool_calls:
-                final = content
-                trace.append({"step": len(trace), "final": final[:200]})
-        elif isinstance(m, ToolMessage):
-            # 把工具观察挂到最近一条 tool trace
-            for t in reversed(trace):
-                if t.get("tool") and "result" not in t:
-                    try:
-                        t["result"] = json.loads(m.content) if isinstance(m.content, str) else m.content
-                    except Exception:
-                        t["result"] = {"raw": str(m.content)[:500]}
-                    break
-
-    if not final:
-        # 兜底：强制 hybrid + get_recipe
+    if final:
+        trace.append({"step": len(trace), "final": final[:200]})
+    else:
         search = rt.hybrid_search(question, top_k=5)
         hits = search.get("hits") or []
         title = hits[0]["title"] if hits else None
@@ -184,18 +209,86 @@ def run_agentic(
     max_steps: int = 4,
     use_llm: bool = True,
     user_id: str = "default",
+    mode: str = "react",
 ) -> dict:
+    """mode: react | pae（Plan-and-Execute）。"""
+    from agent import should_refuse
+
+    mode = (mode or "react").strip().lower()
+    if mode in {"plan", "plan-and-execute", "plan_and_execute"}:
+        mode = "pae"
+
     index = index or build_index()
     memory = memory or MemoryHub(user_id=user_id)
     tools = RecipeTools(index, memory=memory)
     q = memory.session.rewrite_query(question)
 
-    # 无 LLM：确定性工具路径（hybrid → get_recipe → 模板答案）
+    # PreTool 硬门控：先本地 hybrid，OOD 直接拒答（对齐非 agentic 路径）
+    pre = tools.hybrid_search(q, top_k=5)
+    pre_hits = pre.get("hits") or []
+    hit_tuples = [
+        (
+            {
+                "title": h.get("title", ""),
+                "doc_id": h.get("doc_id", ""),
+                "text": h.get("snippet") or h.get("text") or "",
+                "section": h.get("section", ""),
+                "category_zh": h.get("category_zh", ""),
+            },
+            float(h.get("score") or 0),
+        )
+        for h in pre_hits
+    ]
+    if should_refuse(q, hit_tuples):
+        out = {
+            "query": question,
+            "resolved_query": q,
+            "mode": f"{mode}-ood-gate",
+            "agent_mode": mode,
+            "trace": [{"tool": "hybrid_search", "result": {"hits": pre_hits[:3]}, "gate": "should_refuse"}],
+            "answer": "该问题超出美食汇菜谱知识库范围，或证据不足，已拒绝编造。",
+            "refused": True,
+            "memory_used": False,
+        }
+        memory.after_turn(question, out)
+        return out
+
+    mem_block = memory.inject_block(q)
+
+    # ---------- Plan-and-Execute ----------
+    if mode == "pae":
+        final_answer, trace, plan = run_pae(
+            q,
+            tools,
+            memory_block=mem_block,
+            pre_hits=pre_hits,
+            use_llm=use_llm,
+        )
+        out = {
+            "query": question,
+            "resolved_query": q,
+            "mode": "agentic-pae" if use_llm else "agentic-pae-offline",
+            "agent_mode": "pae",
+            "plan": {
+                "goal": plan.get("goal"),
+                "planner": plan.get("planner"),
+                "steps": plan.get("steps"),
+            },
+            "trace": [{"tool": "hybrid_search", "result": {"hits": pre_hits[:3]}, "gate": "pre"}] + trace,
+            "answer": final_answer,
+            "refused": "无法" in final_answer or "证据不足" in final_answer or "拒绝" in final_answer,
+            "tools": [t["function"]["name"] for t in TOOL_SPECS],
+            "memory_used": bool(mem_block),
+            "allowed_titles": sorted(tools.allowed_titles)[:8],
+            "empty_search_streak": tools.empty_search_streak,
+        }
+        memory.after_turn(question, out)
+        return out
+
+    # ---------- ReAct（LangChain AgentExecutor）----------
     if not use_llm:
         mem = tools.recall_memory(q)
-        search = tools.hybrid_search(q, top_k=5)
-        hits = search.get("hits") or []
-        title = hits[0]["title"] if hits else None
+        title = pre_hits[0]["title"] if pre_hits else None
         recipe = tools.get_recipe(title=title) if title else {"error": "no hit"}
         if recipe.get("error"):
             ans = "知识库未找到相关菜谱，已拒绝编造。"
@@ -207,9 +300,10 @@ def run_agentic(
             "query": question,
             "resolved_query": q,
             "mode": "agentic-offline",
+            "agent_mode": "react",
             "trace": [
                 {"tool": "recall_memory", "result": mem},
-                {"tool": "hybrid_search", "result": {"hits": hits[:3]}},
+                {"tool": "hybrid_search", "result": {"hits": pre_hits[:3]}},
                 {"tool": "get_recipe", "result": {"title": recipe.get("title"), "error": recipe.get("error")}},
             ],
             "answer": ans,
@@ -218,36 +312,45 @@ def run_agentic(
         memory.after_turn(question, result)
         return result
 
-    mem_block = memory.inject_block(q)
     final_answer, trace = _run_langchain_agent(
-        q, tools, max_steps=max_steps, memory_block=mem_block
+        q, tools, max_steps=max_steps, memory_block=mem_block, allow_web=True
     )
     out = {
         "query": question,
         "resolved_query": q,
         "mode": "agentic-langchain",
-        "framework": "langchain+langgraph",
-        "trace": trace,
+        "agent_mode": "react",
+        "framework": "langchain",
+        "trace": [{"tool": "hybrid_search", "result": {"hits": pre_hits[:3]}, "gate": "pre"}] + trace,
         "answer": final_answer,
         "refused": "无法" in final_answer or "证据不足" in final_answer or "拒绝" in final_answer,
         "tools": [t["function"]["name"] for t in TOOL_SPECS],
         "memory_used": bool(mem_block),
+        "allowed_titles": sorted(tools.allowed_titles)[:8],
+        "empty_search_streak": tools.empty_search_streak,
     }
     memory.after_turn(question, out)
     return out
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="美食汇 Agentic RAG（LangChain）")
+    ap = argparse.ArgumentParser(description="美食汇 Agentic RAG（ReAct / Plan-and-Execute）")
     ap.add_argument("query", nargs="?", default="宫保鸡丁怎么做？")
     ap.add_argument("--no-llm", action="store_true")
     ap.add_argument("--max-steps", type=int, default=4)
+    ap.add_argument("--mode", choices=["react", "pae"], default=os.environ.get("MEISHI_AGENT_MODE", "react"))
     ap.add_argument("--user", default="default", help="用户 id，记忆按用户隔离")
     ap.add_argument("--session", default=None, help="同一用户下的会话 id")
     args = ap.parse_args()
     mem = MemoryHub(user_id=args.user, session_id=args.session)
     print(json.dumps(
-        run_agentic(args.query, memory=mem, max_steps=args.max_steps, use_llm=not args.no_llm),
+        run_agentic(
+            args.query,
+            memory=mem,
+            max_steps=args.max_steps,
+            use_llm=not args.no_llm,
+            mode=args.mode,
+        ),
         ensure_ascii=False, indent=2))
 
 

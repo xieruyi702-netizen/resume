@@ -12,7 +12,7 @@
 
 - **业务壳**：美食优惠券秒杀 + 食谱问答助手（品牌名美食汇）。
 - **Java 侧**：Spring Boot 3 + MyBatis；Redis 一主两从；Kafka；MySQL；Docker Compose 编排（Nginx 轮询 + app1/app2 双实例 + 中间件）。完整链路——券详情读（多级缓存）、秒杀写（限流 + Lua + 同步待支付订单）、支付/取消（状态机 + ZSet）与支付后 Kafka 加积分。
-- **Python 侧**：基于 HowToCook 开源菜谱 Markdown（约 369 道）切片建库；关键词 BM25 + 本地 BGE 向量双路召回；**LangChain / LangGraph ReAct Agent**；生成模型 **DeepSeek V4 Flash**，评测 Judge **GLM-5.3-Flash**（跨源）；分层记忆 + OOD 拒答；评测集 100 题。
+- **Python 侧**：基于 HowToCook 开源菜谱 Markdown（约 369 道）切片建库；关键词 BM25 + 本地 BGE 向量双路召回；**LangChain ReAct / Plan-and-Execute**；生成模型 **DeepSeek V4 Flash**，评测 Judge **GLM-5.3-Flash**（跨源）；分层记忆 + OOD 拒答；评测集 100 题。
 
 设计原则：每个关键决策尽量有「压测数字」或「对账/评测结果」可复现；组件级 QPS 与端到端 JMeter 数字分口径，面试主动说清。
 
@@ -138,33 +138,33 @@ Redis 扣减成功后如果进程崩溃、消息没发出，会出现「库存�
 
 - **知识库**：[HowToCook](https://github.com/Anduin2017/HowToCook) Markdown → 菜谱/切片 JSONL；约 369 道菜。
 - **检索**：jieba+BM25 关键词路 + 本地 `bge-small-zh-v1.5` 向量路，RRF 融合；Agent 也可单路调用。
-- **Agentic**：**LangChain StructuredTool + LangGraph `create_react_agent`**；工具含检索 / `get_recipe` / `get_section` / `recall_memory` / 可选 `web_search`。
+- **Agentic**：**LangChain `create_tool_calling_agent` + `AgentExecutor`（ReAct）**，以及 **Plan-and-Execute**；工具含检索 / `get_recipe` / `get_section` / `recall_memory` / 可选 `web_search`。
 - **分层记忆（按用户隔离）**：
-  - **回合内**：LangGraph messages 承载本轮工具观察；
+  - **回合内**：AgentExecutor intermediate_steps / PAE trace 承载本轮工具观察；
   - **会话短期**：独立 Redis（`redis-memory:6382`，与秒杀主从隔离）；Key `mem:u:{user}:s:{session}:turns/work`；焦点菜指代；
-  - **用户长期**：专用 Chroma 向量库（`chroma_ltm`），metadata 带 `user_id` 过滤；忌口/偏好/拒答教训语义召回。
-- **上下文组装**：`ContextAssembler` 按预算拼注入块——**长期约束优先 → 近轮会话**，总字符封顶（默认 2000），避免挤占检索证据位；Agent 系统提示先吃记忆块，检索结果走 tool 观察。
+  - **用户长期**：Memdir 文件笔记（`MEMORY.md` 索引 + `PROFILE.md` 忌口/偏好 + 主题 Markdown）；按用户目录隔离，注入时预算截断。
+- **上下文组装**：`ContextAssembler` 按预算拼注入块——**PROFILE/忌口优先 → 近轮会话**，总字符封顶（默认 2000），避免挤占检索证据位；Agent 系统提示先吃记忆块，检索结果走 tool 观察。
 - **拒答**：库外菜、非食谱问题门控拒答，避免编造步骤/用量。
 
 #### 高频追问
 
 **问：为什么用 LangChain？**  
-答：用 LangGraph ReAct / tool-calling 托管多步工具循环与消息态，检索与读菜谱仍是自研 `RecipeTools`（BM25+向量+RRF），框架管编排、业务工具可单测。实习侧 Agent 是 **Spring AI**，与项目二栈分开讲。
+答：用 LangChain tool-calling Agent 托管多步工具循环，检索与读菜谱仍是自研 `RecipeTools`（BM25+向量+RRF），框架管编排、业务工具可单测；不依赖 LangGraph。实习侧 Agent 是 **Spring AI**，与项目二栈分开讲。
 
 **问：短期记忆怎么淘汰？**  
-答：两层——① 条数：`LTRIM` 只保留最近 N 轮（默认 12）；② 时间：每次写入刷新 Key TTL（默认 24h），过期整会话清空。Redis 侧还可配 `maxmemory-policy allkeys-lru` 兜底。
+答：两层——① 条数：`LTRIM` 只保留最近 N 轮（默认 12）；② 时间：每次写入刷新 Key TTL（默认 24h），过期整会话清空。Redis 侧还可配 `maxmemory-policy allkeys-lru` 兜底。轮次够多时滚一份会话摘要，少带近轮原文。
 
-**问：长期记忆怎么淘汰？写向量库会不会无限涨？**  
-答：每用户硬上限（默认 200 条）；写入后按 `ts` 删最旧。检索 `where={user_id}`，与别的用户物理隔离在同一 collection 的 metadata 过滤上。
+**问：长期记忆怎么存？会不会无限涨？**  
+答：不用向量库。忌口/偏好写进 PROFILE.md，其它主题进 Markdown；索引行数有上限，注入再按字符预算截断。内容可读可审计，比语义捞杂记更贴合本场景。
 
 **问：上下文一般怎么组装？**  
 答：工业常见顺序是：系统策略 → 长期硬约束（忌口）→ 会话近轮/焦点 → 当前问题；证据（检索 chunk / 全文）不塞进记忆预算，由工具观察带回。超预算时**先保长期、截短期**，因为忌口比闲聊更不能丢。
 
 **问：长期记忆会不会污染别的用户？**  
-答：不会。Chroma query 带 `user_id` filter；Redis Key 也带 `user_id`。评测 `persist_session=False` 且每题独立 user/session，避免串题。Redis/Chroma 不可用时进程内兜底，评测仍可跑。
+答：不会。Memdir 按 `user_id` 分目录；Redis Key 也带 `user_id`。评测 `persist_session=False` 且每题独立 user/session，避免串题。Redis 不可用时进程内兜底，评测仍可跑。
 
 **问：网页搜索会不会覆盖本地菜谱？**  
-答：策略是本地优先，证据不足才 web_search，并要求注明网络来源；主答案仍以知识库为准。
+答：策略是本地优先；`web_search` 需本地连续空结果才放行，并要求注明网络来源；主答案仍以知识库为准。
 
 ---
 

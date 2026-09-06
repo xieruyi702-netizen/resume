@@ -38,8 +38,8 @@
 - **券详情多级缓存**：**布隆过滤器**本地快照拦非法 id；**L1 Caffeine** → **L2 Redis 从库**（轮询读、失败回主）→ MySQL；互斥重建 + 空值缓存防击穿，TTL 抖动防雪崩；更新时删 L2 + pub/sub 踢各实例 L1；
 - **秒杀与限流**：Nginx 轮询双实例；**令牌桶 / 漏桶**可切换（分片、fail-fast）；JMeter 测试峰值令牌桶约 **6.0k**、漏桶约 **5.3k** req/s；热路径 **Redis Lua** 一次完成库存判定、一人一单与扣减；
 - **订单闭环**：抢券同事务落待支付订单，返回即可支付；状态机 待支付/已支付/超时取消/用户取消；**支付幂等**（已付再调仍成功；CAS 防双扣）；ZSet 延迟取消 + CAS/Lua 回补；支付成功后 **Kafka 异步加积分**（订单 `points_status` 兼投递标记，消费幂等/死信）；用户余额 **Redisson**（读 Cache Aside，写改 MySQL 后删缓存）+ 锁内扣充，支付入账商铺；雪花订单号，时钟回拨拒发号；
-- **食谱 Agentic RAG**：HowToCook 切片建库；关键词 + 向量双路召回；**LangChain / LangGraph ReAct Agent**（**DeepSeek V4 Flash**）；记忆**按用户隔离**（短期 **Redis** TTL+条数淘汰，长期向量召回 + 每用户上限淘汰，上下文按预算比例组装）；库外菜与非美食问题 OOD 拒答；
-- **指标**：JMeter 64 线程真实漏斗约 **3.1k req/s**、P99 **54ms**（Err 0%）；Agent Hit@1≈0.90 / Hit@5≈0.96 / MRR≈0.91，Judge≈0.82，拒答≈0.90。
+- **食谱 Agentic RAG**：HowToCook 切片建库；关键词 + 向量双路召回；**LangChain ReAct** 与 **Plan-and-Execute** 双模式；记忆按用户隔离——短期 Redis（会话滚动摘要）、长期 **Memdir / PROFILE.md**（忌口优先注入）、回合末抽取；工具结果截断 + 记忆注入预算，防挤占检索证据；**AGENT.md** + PreTool（OOD、菜名白名单、`web_search` 空结果门控）；库外菜与非美食拒答；
+- **指标**：JMeter 64 线程真实漏斗约 **3.1k req/s**、P99 **54ms**（Err 0%）；Agent Hit@1≈0.90 / Hit@5≈0.96 / MRR≈0.91，Judge≈0.82，拒答≈0.90；记忆/门控/PAE 评测 6/6 通过。
 
 ---
 
