@@ -1,0 +1,38 @@
+{
+  "kb": "HowToCook",
+  "retrieval": {
+    "n": 70,
+    "Hit@1": 0.9857,
+    "Hit@3": 1.0,
+    "Hit@5": 1.0,
+    "MRR": 0.9929,
+    "Recall@5": 1.0
+  },
+  "generation": {
+    "gen_model": "glm-4-flash-250414",
+    "judge_model": "glm-4.7-flash",
+    "judge_sample_n": 40,
+    "judge_sample_seed": 42,
+    "missing_refuse_rate": 0.625,
+    "ood_refuse_rate": 1.0,
+    "n_judged": 30,
+    "glm_judge_avg_score": 0.9242,
+    "glm_judge_by_type": {
+      "qa": 0.9838,
+      "missing": 0.6667,
+      "ood": 1.0
+    },
+    "glm_judge_dims": {
+      "faithfulness": 0.9333,
+      "relevance": 0.9333,
+      "completeness": 0.8667,
+      "no_hallucination": 0.9333
+    }
+  },
+  "n_cases": 100,
+  "testset_mix": {
+    "qa": 70,
+    "missing": 15,
+    "ood": 15
+  }
+}

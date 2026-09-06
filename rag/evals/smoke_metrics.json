@@ -1,0 +1,25 @@
+{
+  "kb": "HowToCook",
+  "retrieval": {
+    "n": 10,
+    "Hit@1": 0.8,
+    "Hit@3": 0.9,
+    "Hit@5": 1.0,
+    "MRR": 0.875,
+    "Recall@5": 1.0
+  },
+  "generation": {
+    "gen_model": "glm-4-flash-250414",
+    "judge_model": "glm-4.7-flash",
+    "ood_refuse_rate": null,
+    "n_judged": 9,
+    "glm_judge_avg_score": 0.7778,
+    "glm_judge_dims": {
+      "faithfulness": 0.7778,
+      "relevance": 0.7778,
+      "completeness": 0.6667,
+      "no_hallucination": 0.8889
+    }
+  },
+  "n_cases": 10
+}

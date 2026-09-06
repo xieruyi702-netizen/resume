@@ -1,0 +1,20 @@
+{"id":"g1","type":"qa","query":"宫保鸡丁怎么做？","relevant_doc_ids":["meat_dish/宫保鸡丁/宫保鸡丁"],"expect_titles":["宫保鸡丁"]}
+{"id":"g2","type":"qa","query":"皮蛋豆腐需要哪些原料","relevant_doc_ids":["vegetable_dish/皮蛋豆腐"],"expect_titles":["皮蛋豆腐"]}
+{"id":"g3","type":"qa","query":"西红柿炒鸡蛋的步骤","relevant_doc_ids":["vegetable_dish/西红柿炒鸡蛋"],"expect_titles":["西红柿炒鸡蛋"]}
+{"id":"g4","type":"qa","query":"红烧肉简易做法","relevant_doc_ids":["meat_dish/红烧肉/简易红烧肉","meat_dish/红烧肉/南派红烧肉","meat_dish/湖南家常红烧肉/湖南家常红烧肉"],"expect_titles":["红烧肉"]}
+{"id":"g5","type":"qa","query":"可乐鸡翅如何烹饪","relevant_doc_ids":["meat_dish/可乐鸡翅"],"expect_titles":["可乐鸡翅"]}
+{"id":"g6","type":"qa","query":"清蒸鲈鱼做法","relevant_doc_ids":["aquatic/清蒸鲈鱼/清蒸鲈鱼"],"expect_titles":["清蒸鲈鱼"]}
+{"id":"g7","type":"qa","query":"蛋炒饭需要什么材料","relevant_doc_ids":["staple/蛋炒饭"],"expect_titles":["蛋炒饭"]}
+{"id":"g8","type":"qa","query":"麻婆豆腐怎么做才正宗","relevant_doc_ids":["meat_dish/麻婆豆腐/麻婆豆腐"],"expect_titles":["麻婆豆腐"]}
+{"id":"g9","type":"qa","query":"糖醋排骨的用量计算","relevant_doc_ids":["meat_dish/糖醋排骨/糖醋排骨"],"expect_titles":["糖醋排骨"]}
+{"id":"g10","type":"qa","query":"酸辣土豆丝怎么切丝","relevant_doc_ids":["vegetable_dish/酸辣土豆丝"],"expect_titles":["酸辣土豆丝"]}
+{"id":"g11","type":"qa","query":"番茄鸡蛋汤怎么熬","relevant_doc_ids":["soup/西红柿鸡蛋汤"],"expect_titles":["西红柿鸡蛋汤"]}
+{"id":"g12","type":"qa","query":"手撕包菜家常做法","relevant_doc_ids":["vegetable_dish/手撕包菜/手撕包菜"],"expect_titles":["手撕包菜"]}
+{"id":"g13","type":"qa","query":"白灼虾需要焯水多久","relevant_doc_ids":["aquatic/白灼虾/白灼虾"],"expect_titles":["白灼虾"]}
+{"id":"g14","type":"qa","query":"茶叶蛋卤多久","relevant_doc_ids":["breakfast/茶叶蛋"],"expect_titles":["茶叶蛋"]}
+{"id":"g15","type":"qa","query":"鱼香肉丝的配料比例","relevant_doc_ids":["meat_dish/鱼香肉丝"],"expect_titles":["鱼香肉丝"]}
+{"id":"o1","type":"ood","query":"帮我写一段 Spring Boot 限流代码","relevant_doc_ids":[],"expect_titles":[]}
+{"id":"o2","type":"ood","query":"比特币明天会涨吗","relevant_doc_ids":[],"expect_titles":[]}
+{"id":"o3","type":"ood","query":"What is the capital of France?","relevant_doc_ids":[],"expect_titles":[]}
+{"id":"o4","type":"ood","query":"量子纠缠如何证明费马大定理","relevant_doc_ids":[],"expect_titles":[]}
+{"id":"o5","type":"ood","query":"xyzabc123 unrelated noise","relevant_doc_ids":[],"expect_titles":[]}

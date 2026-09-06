@@ -1,0 +1,40 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/seckill?useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+    username: rpc
+    password: rpc123
+    hikari:
+      maximum-pool-size: 16
+      minimum-idle: 16
+      pool-name: seckill-db-pool
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+
+seckill:
+  redis:
+    master: 127.0.0.1:6379
+    replicas: 127.0.0.1:6380,127.0.0.1:6381   # 一主两从：读请求在从库间轮询，失败回退主库
+  kafka:
+    bootstrap: 127.0.0.1:9092
+    topic: seckill-points
+  voucher-count: 1000
+  # 秒杀接口限流：mode=token|leaky；容量 200，速率 5000/s（令牌补充 / 漏出）
+  rate:
+    mode: token
+    capacity: 200
+    refill-per-sec: 5000
+  # 订单超时未支付自动取消（压测 3s，生产为分钟级）
+  order-timeout-ms: 3000
+  # Redis 秒杀残缺态定时补偿：stock+SCARD(users) 应等于 initial-stock
+  reconcile:
+    enabled: true
+    delay-ms: 5000
+    initial-stock: 1000
+  snowflake:
+    worker-id: 1      # 容器内由环境变量 SNOWFLAKE_WORKER_ID 覆盖（app1=1/app2=2），防多实例撞号
+    datacenter-id: 1

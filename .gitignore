@@ -1,24 +1,20 @@
-# secrets & local env
-.env
-**/.env
-
-# python
-.venv/
-**/__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-
-# large local artifacts
-**/data/
-reference/
-*.pkl
-*.bin
-*.pt
-*.onnx
-
-# OS / IDE
-.DS_Store
+target/
+*.class
+*.log
 .idea/
-.vscode/
+*.iml
+.DS_Store
+docker/mysql-init/data/
+dump.rdb
+bench/results.jtl
+bench/*.jtl
+bench/report/
+dump.rdb
+rag/.venv/
+rag/data/HowToCook/
+rag/.env
+rag/memory_store/
+rag/kb/embeddings.npy
+__pycache__/
+*.pyc
+.env

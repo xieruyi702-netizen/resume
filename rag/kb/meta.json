@@ -1,0 +1,18 @@
+{
+  "source": "https://github.com/Anduin2017/HowToCook",
+  "license": "Unlicense",
+  "docs": 369,
+  "chunks": 1867,
+  "by_category": {
+    "水产": 28,
+    "早餐": 25,
+    "酱料": 9,
+    "甜品": 19,
+    "饮料": 23,
+    "荤菜": 110,
+    "半成品": 10,
+    "汤粥": 23,
+    "主食": 59,
+    "素菜": 63
+  }
+}
