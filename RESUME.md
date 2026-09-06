@@ -21,7 +21,7 @@
 
 - **超级匹配延迟弹窗**：付费玩法——购卡后延迟推送高质量候选。Redis ZSet（score=触发时刻）做延迟队列，入队顺带清过期脏任务；**Lua 原子批量弹出**（ZRANGEBYSCORE + 按 member ZREM）防多实例重复消费，任务入独立线程池并发推荐。候选互斥改为 **SET NX EX**，释放前 Lua 校验锁归属，修复原 setnx/expire 分离导致的锁泄漏；延迟期续期 TTL。发送/曝光双 key 频控，pipeline 前置读做主叫拦截与候选过滤；
 - **UCB 延迟匹配工程化**：将「延迟多久再匹配」后端落地——按付费等级 **HIGH/MID/LOW** 叠加性别分桶独立统计；臂数据存**独立 Redis Hash**。支付/挂断回调异步结算，**Lua** 单次往返完成查 pending → 累加臂统计 → 清 pending，防回调与过期清理双结算；pending **TTL + 定时批量清理**保统计窗口无脏数据。冷启动次数不足优先试满，再 UCB 打分；链路失败降级固定延迟并分原因打点；
-- **可视化平台 Kafka 消费优化**：debug 消息含上千行候选明细。同 poll 批内合并后分块批量 INSERT，Hive 回写迁出消费线程异步化；子批失败整批不 ack、DuplicateKey 幂等成功；止血改为 pause/resume（offset 不动），避免静默丢数。列表查询 N+1 改批量 IN；simulate 去掉服务端长轮询占 Tomcat 线程，改为立即返回 + 事件触发；
+- **可视化平台 Kafka 消费与链路可观测**：debug 消息含上千行候选明细。同 poll 批内合并后分块批量 INSERT，Hive 回写迁出消费线程异步化；子批失败整批不 ack、DuplicateKey 幂等成功；止血改为 pause/resume（offset 不动），避免静默丢数。列表查询 N+1 改批量 IN；simulate 去掉服务端长轮询占 Tomcat 线程，改为立即返回 + 事件触发；参与链路可观测建设——算子分段耗时打点 + 白名单请求全链路快照经独立线程池异步上报 Kafka，主流程零阻塞，为性能优化提供度量基线；
 - **实验策略 Agent**：基于 **Spring AI** 在 SQL 跑批平台上构建取数 Agent。多线程跑批 + 异步飞书，端到端约 **−89%**；定时任务 cron 存 MySQL，**ThreadPoolTaskScheduler + CronTrigger** 动态注册/重载，改周期不重启。知识层职责分离——业务表摘要向量化按需检索，指标口径常驻提示词防漂移；生成 SQL 直查 Hive 试跑；评测准确率约 **90%**、越界拒答约 **95%**。
 
 ---
